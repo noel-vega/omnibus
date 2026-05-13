@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -21,16 +20,16 @@ const (
 )
 
 type Job struct {
-	ID          uuid.UUID
-	Type        string
-	Payload     json.RawMessage
-	Status      JobStatus
-	Attempts    int
-	MaxRetries  int
-	LeasedUntil *time.Time
-	RunAt       time.Time
-	LastError   *string
-	CreatedAt   time.Time
+	ID          uuid.UUID       `json:"id"`
+	Type        string          `json:"type"`
+	Payload     json.RawMessage `json:"payload"`
+	Status      JobStatus       `json:"status"`
+	Attempts    int             `json:"attempts"`
+	MaxRetries  int             `json:"maxRetries"`
+	LeasedUntil *time.Time      `json:"leasedUntil"`
+	RunAt       time.Time       `json:"runAt"`
+	LastError   *string         `json:"lastError"`
+	CreatedAt   time.Time       `json:"createdAt"`
 }
 
 type Handler struct {
@@ -48,20 +47,6 @@ type EnqueueJobRequest struct {
 	Type    string
 	Payload json.RawMessage
 }
-
-// CREATE TABLE IF NOT EXISTS jobs (
-//     id           UUID PRIMARY KEY,                       -- UUIDv7, generated client-side
-//     type         TEXT NOT NULL,
-//     payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
-//     status       TEXT NOT NULL DEFAULT 'queued'
-//                  CHECK (status IN ('queued','running','completed','dead')),
-//     attempts     SMALLINT NOT NULL DEFAULT 0,
-//     max_retries  SMALLINT NOT NULL DEFAULT 3,
-//     leased_until TIMESTAMPTZ,
-//     run_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-//     last_error   TEXT,
-//     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-// );
 
 func (h *Handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 	ctype := r.Header.Get("Content-Type")
@@ -88,12 +73,40 @@ func (h *Handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
-	fmt.Println(body)
 }
 
-func handleGetJobs(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	query := `
+		SELECT * FROM jobs
+	`
+	rows, err := h.db.Query(
+		r.Context(),
+		query,
+	)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	var jobs []Job
+
+	for rows.Next() {
+		var j Job
+		err := rows.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		jobs = append(jobs, j)
+	}
+
+	if err = json.NewEncoder(w).Encode(jobs); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 }
 
 func handleJobAck(w http.ResponseWriter, r *http.Request) {

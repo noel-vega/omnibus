@@ -17,18 +17,15 @@ func main() {
 
 	db, err := pgxpool.New(context.Background(), env["PG_CONNECTION_STRING"])
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err = db.Ping(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "Could not connect to db: %v", err.Error())
+		fmt.Fprintf(os.Stderr, "Could not establish connection to db: %v", err)
 		os.Exit(1)
 	}
 
 	jobHandler := NewHandler(db)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /jobs", jobHandler.handleEnqueueJob)
-	mux.HandleFunc("GET /jobs", handleGetJobs)
+	mux.HandleFunc("GET /jobs", jobHandler.handleListJobs)
 	mux.HandleFunc("POST /jobs/{id}/ack", handleJobAck)
 
 	srv := &http.Server{
