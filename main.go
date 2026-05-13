@@ -26,6 +26,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /jobs", jobHandler.handleEnqueueJob)
 	mux.HandleFunc("GET /jobs", jobHandler.handleListJobs)
+	mux.HandleFunc("GET /jobs/{id}", jobHandler.handleGetJob)
 	mux.HandleFunc("POST /jobs/{id}/ack", handleJobAck)
 
 	srv := &http.Server{

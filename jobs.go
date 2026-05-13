@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -101,12 +104,35 @@ func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		jobs = append(jobs, j)
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	if err = json.NewEncoder(w).Encode(jobs); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	jobID := r.PathValue("id")
+	fmt.Println(jobID)
+	query := `SELECT * FROM jobs WHERE id = $1`
+	row := h.db.QueryRow(r.Context(), query, jobID)
+	var j Job
+
+	if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Println("error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(j); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 }
 
 func handleJobAck(w http.ResponseWriter, r *http.Request) {
