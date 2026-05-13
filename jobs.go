@@ -68,7 +68,7 @@ func (h *Handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 
 	_, err := h.db.Exec(
 		r.Context(),
-		`INSERT INTO jobs (id, type, payload) values ($1, $2, $3)`,
+		`INSERT INTO jobs (id, type, payload) values ($1, $2, $3);`,
 		body.ID, body.Type, body.Payload,
 	)
 	if err != nil {
@@ -114,7 +114,7 @@ func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("id")
 	fmt.Println(jobID)
-	query := `SELECT * FROM jobs WHERE id = $1`
+	query := `SELECT * FROM jobs WHERE id = $1;`
 	row := h.db.QueryRow(r.Context(), query, jobID)
 	var j Job
 
@@ -123,7 +123,52 @@ func (h *Handler) handleGetJob(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		fmt.Println("error", err)
+
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(j); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+type DequeueJobRequest struct {
+	Type string
+}
+
+func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
+	var data DequeueJobRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	query := `
+	UPDATE jobs
+	SET status = 'running'
+	WHERE id = (
+		SELECT id FROM jobs
+		WHERE type = $1 AND status = 'queued' 
+		ORDER BY run_at 
+	  LIMIT 1
+	  FOR UPDATE SKIP LOCKED
+	)
+	RETURNING *;
+	`
+	row := h.db.QueryRow(r.Context(), query, data.Type)
+
+	var j Job
+
+	if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
