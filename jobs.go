@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,6 +141,12 @@ type DequeueJobRequest struct {
 }
 
 func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
+	ctype := r.Header.Get("Content-Type")
+	if ctype != "application/json" {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		return
+	}
+
 	var data DequeueJobRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
@@ -159,18 +166,32 @@ func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
 	)
 	RETURNING *;
 	`
-	row := h.db.QueryRow(r.Context(), query, data.Type)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 
 	var j Job
+	for {
+		row := h.db.QueryRow(ctx, query, data.Type)
 
-	if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			w.WriteHeader(http.StatusNotFound)
-			return
+		if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			select {
+			case <-ticker.C:
+				continue
+			case <-ctx.Done():
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 		}
-
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+		break
 	}
 
 	w.Header().Set("Content-Type", "application/json")
