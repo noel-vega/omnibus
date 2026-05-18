@@ -1,4 +1,4 @@
-package main
+package jobs
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -37,12 +38,14 @@ type Job struct {
 }
 
 type Handler struct {
-	db *pgxpool.Pool
+	db         *pgxpool.Pool
+	repository *Repository
 }
 
 func NewHandler(db *pgxpool.Pool) *Handler {
 	return &Handler{
-		db,
+		db:         db,
+		repository: NewRepository(db),
 	}
 }
 
@@ -52,7 +55,7 @@ type EnqueueJobRequest struct {
 	Payload json.RawMessage
 }
 
-func (h *Handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) HandleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 	ctype := r.Header.Get("Content-Type")
 	if ctype != "application/json" {
 		w.WriteHeader(http.StatusUnsupportedMediaType)
@@ -67,42 +70,17 @@ func (h *Handler) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	_, err := h.db.Exec(
-		r.Context(),
-		`INSERT INTO jobs (id, type, payload) values ($1, $2, $3);`,
-		body.ID, body.Type, body.Payload,
-	)
-	if err != nil {
-		slog.Error("db", "insert", err)
+	if err := h.repository.InsertJob(r.Context(), InsertJobParams(body)); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 }
 
-func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	query := `
-		SELECT * FROM jobs
-	`
-	rows, err := h.db.Query(
-		r.Context(),
-		query,
-	)
+func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
+	jobs, err := h.repository.ListJobs(r.Context())
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
-	}
-
-	var jobs []Job
-
-	for rows.Next() {
-		var j Job
-		err := rows.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		jobs = append(jobs, j)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -112,25 +90,21 @@ func (h *Handler) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) handleGetJob(w http.ResponseWriter, r *http.Request) {
-	jobID := r.PathValue("id")
-	fmt.Println(jobID)
-	query := `SELECT * FROM jobs WHERE id = $1;`
-	row := h.db.QueryRow(r.Context(), query, jobID)
-	var j Job
+func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 
-	if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
+	job, err := h.repository.GetJob(r.Context(), jobID)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(j); err != nil {
+	if err := json.NewEncoder(w).Encode(job); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -140,13 +114,8 @@ type DequeueJobRequest struct {
 	Type string
 }
 
-func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
-	ctype := r.Header.Get("Content-Type")
-	if ctype != "application/json" {
-		w.WriteHeader(http.StatusUnsupportedMediaType)
-		return
-	}
-
+func (h *Handler) HandleDequeueJob(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Dequeue Job...")
 	var data DequeueJobRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
@@ -167,7 +136,7 @@ func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
 	RETURNING *;
 	`
 
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -179,12 +148,14 @@ func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
 
 		if err := row.Scan(&j.ID, &j.Type, &j.Payload, &j.Status, &j.Attempts, &j.MaxRetries, &j.LeasedUntil, &j.RunAt, &j.LastError, &j.CreatedAt); err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Error("sql", "error", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
 			select {
 			case <-ticker.C:
+				fmt.Println("Tick")
 				continue
 			case <-ctx.Done():
 				w.WriteHeader(http.StatusNoContent)
@@ -201,6 +172,6 @@ func (h *Handler) handleDequeueJob(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleJobAck(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
+// func HandleJobAck(w http.ResponseWriter, r *http.Request) {
+// 	w.WriteHeader(http.StatusNotImplemented)
+// }
