@@ -99,7 +99,12 @@ func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.repository.GetJob(r.Context(), jobID)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		switch {
+		case errors.Is(err, ErrJobNotFound):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		return
 	}
 
